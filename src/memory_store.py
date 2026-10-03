@@ -202,11 +202,12 @@ _PATTERNS: dict[str, list[re.Pattern]] = {
         # "muốn bạn trả lời ngắn gọn" / "thành 3 bullet"
         re.compile(r"(?:mình\s+)?muốn\s+(?:bạn\s+)?trả\s+lời\s+(?P<value>ngắn\s*gọn[^,\.\n!?]{0,60}|thành\s+\d+\s+bullet[^,\.\n!?]{0,60})", re.IGNORECASE),
         re.compile(r"hãy\s+trả\s+lời\s+(?P<value>ngắn\s*gọn[^,\.\n!?]{0,60}|thành\s+\d+\s+bullet[^,\.\n!?]{0,60}|thành\s+bullet[^,\.\n!?]{0,60})", re.IGNORECASE),
-        re.compile(r"style\s+trả\s+lời[^:]*[:\s]+(?P<value>[^\.,;!\?\n]{3,60})", re.IGNORECASE),
+        # "style trả lời X" – only when followed by an actual value (not end of sentence)
+        re.compile(r"style\s+trả\s+lời\s+(?:mình\s+thích\s+)?(?:là\s+)?(?P<value>ngắn\s*gọn[^,\.\n!?]{0,60}|\d+\s+bullet[^,\.\n!?]{0,60}|bullet[^,\.\n!?]{0,60})", re.IGNORECASE),
     ],
     "interests": [
         re.compile(r"mình\s+thích\s+(?P<value>Python[^,\.\n!?]{0,60}|AI[^,\.\n!?]{0,60})", re.IGNORECASE),
-        re.compile(r"mối\s+quan\s+tâm[^\w]*(?:là|:)?\s*(?P<value>[^\.,;!\?\n]+)", re.IGNORECASE),
+        re.compile(r"mình\s+(?:đang\s+)?quan\s+tâm[^,\.\n!?]{0,10}(?:đến|tới|về)\s+(?P<value>Python[^,\.\n!?]{0,60}|AI[^,\.\n!?]{0,60})", re.IGNORECASE),
     ],
 }
 
@@ -267,6 +268,10 @@ def extract_profile_updates(message: str) -> dict[str, str]:
 
             # Trim common trailing noise words (e.g. "cà phê sữa đá như cũ")
             value = re.sub(r"\s+(như\s+cũ|vẫn\s+vậy|thôi|nhé|nha|đó|rồi)\s*$", "", value, flags=re.IGNORECASE).strip()
+
+            # Skip implausibly short values (single word < 3 chars likely a capture error)
+            if len(value) < 3:
+                continue
 
             if value:
                 facts[key] = value
