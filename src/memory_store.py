@@ -215,6 +215,61 @@ _PATTERNS: dict[str, list[re.Pattern]] = {
 _MAX_VALUE_LEN = 80
 
 
+
+
+# ---------------------------------------------------------------------------
+# Bonus Task 8.1 – Confidence threshold
+# ---------------------------------------------------------------------------
+
+# Low-confidence signals: the fact is hedged / uncertain
+_HEDGE_PATTERNS = re.compile(
+    r"\b(có\s+lẽ|có\s+thể|hình\s+như|không\s+chắc|chắc\s+là|nghe\s+nói|"
+    r"maybe|perhaps|possibly|probably|might|could\s+be|not\s+sure)\b",
+    re.IGNORECASE,
+)
+
+# Question-only turn (whole message is interrogative – no new fact declared)
+_PURE_QUESTION = re.compile(
+    r"^\s*[^.!]*\?\s*$",
+    re.DOTALL,
+)
+
+
+def confidence_score(message: str, key: str, value: str) -> float:
+    """Return a confidence score in [0.0, 1.0] for a (key, value) fact.
+
+    Heuristics
+    ----------
+    - Starts at 1.0 (full confidence for direct, declarative statements).
+    - Drops to 0.4 if the message contains hedge words ("có lẽ", "maybe", …).
+    - Drops to 0.2 if the whole message appears to be a pure question.
+    - Correction markers ("đính chính", "giờ là", …) bump score back up to 0.95
+      because explicit corrections are high-signal.
+
+    The threshold used in ``extract_profile_updates`` is 0.5:
+    facts below this score are discarded.
+    """
+    score = 1.0
+
+    # Hedge language lowers confidence
+    if _HEDGE_PATTERNS.search(message):
+        score *= 0.4
+
+    # Pure question has no declarative content
+    if _PURE_QUESTION.match(message):
+        score *= 0.2
+
+    # Explicit correction → very high confidence regardless
+    if _CORRECTION_MARKERS.search(message):
+        score = max(score, 0.95)
+
+    return round(score, 2)
+
+
+# Minimum confidence required to persist a fact into User.md
+CONFIDENCE_THRESHOLD = 0.5
+
+
 def extract_profile_updates(message: str) -> dict[str, str]:
     """Extract stable profile facts from a user message.
 
@@ -224,13 +279,10 @@ def extract_profile_updates(message: str) -> dict[str, str]:
     - Skip noise signals (joke professions, temporary locations).
     - Correction markers *do* produce facts (the corrected value is the new fact).
     - Values longer than ``_MAX_VALUE_LEN`` are truncated.
+    - **Bonus 8.1**: facts with ``confidence_score < CONFIDENCE_THRESHOLD`` are
+      discarded so hedged or uncertain statements are not written to User.md.
     - Returns only keys where a value was confidently found.
     """
-    # Skip if the whole message is a recall request with no new information
-    if _QUESTION_GUARDS.search(message) and not _CORRECTION_MARKERS.search(message):
-        # Still allow extraction if the message ALSO contains a correction
-        pass
-
     facts: dict[str, str] = {}
 
     for key, patterns in _PATTERNS.items():
@@ -240,23 +292,19 @@ def extract_profile_updates(message: str) -> dict[str, str]:
                 continue
             value = m.group("value").strip().rstrip(".,;!?")
 
-            # Per-key noise guard
+            # Per-key noise guard: profession
             if key == "profession" and _NOISE_JOB.search(message):
-                # Noise guard only applies if the matched job appears near the joke signal,
-                # AND there is no authoritative override like "nghề nghiệp hiện tại vẫn là"
                 _authoritative = re.compile(
                     r"nghề\s+nghiệp\s+hiện\s+tại|công\s+việc\s+hiện\s+tại|nghề\s+hiện\s+tại",
                     re.IGNORECASE,
                 )
                 is_first_pattern = pattern == _PATTERNS["profession"][0]
-                if is_first_pattern or not _authoritative.search(message):
-                    # This is the high-priority pattern – don't block it
-                    pass
-                else:
+                if not (is_first_pattern or _authoritative.search(message)):
                     noise_m = _NOISE_JOB.search(message)
                     if noise_m and abs(m.start() - noise_m.start()) < 120:
                         continue
 
+            # Per-key noise guard: location
             if key == "location" and _NOISE_LOCATION.search(message):
                 noise_m = _NOISE_LOCATION.search(message)
                 if noise_m and abs(m.start() - noise_m.start()) < 120:
@@ -266,23 +314,28 @@ def extract_profile_updates(message: str) -> dict[str, str]:
             if len(value) > _MAX_VALUE_LEN:
                 value = value[:_MAX_VALUE_LEN]
 
-            # Trim common trailing noise words (e.g. "cà phê sữa đá như cũ")
-            value = re.sub(r"\s+(như\s+cũ|vẫn\s+vậy|thôi|nhé|nha|đó|rồi)\s*$", "", value, flags=re.IGNORECASE).strip()
+            # Trim trailing noise words ("như cũ", "vẫn vậy", …)
+            value = re.sub(
+                r"\s+(như\s+cũ|vẫn\s+vậy|thôi|nhé|nha|đó|rồi)\s*$",
+                "",
+                value,
+                flags=re.IGNORECASE,
+            ).strip()
 
-            # Skip implausibly short values (single word < 3 chars likely a capture error)
+            # Skip implausibly short values
             if len(value) < 3:
+                continue
+
+            # Bonus 8.1 – confidence threshold filter
+            score = confidence_score(message, key, value)
+            if score < CONFIDENCE_THRESHOLD:
                 continue
 
             if value:
                 facts[key] = value
-                break  # first match wins
+                break  # first match wins per key
 
     return facts
-
-
-# ---------------------------------------------------------------------------
-# Task 3.4 – summarize_messages
-# ---------------------------------------------------------------------------
 
 def summarize_messages(messages: list[dict[str, str]], max_items: int = 6) -> str:
     """Create a compact text summary of the *oldest* messages in a thread.
